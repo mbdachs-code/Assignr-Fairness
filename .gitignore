@@ -7,3 +7,4 @@ __pycache__/
 assignr_hosted.db
 instance/
 .DS_Store
+!.env.example
