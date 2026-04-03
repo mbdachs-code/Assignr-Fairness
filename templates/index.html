@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Assignr Hosted Dashboard</title>
+    <style>
+      :root {
+        --bg: #f6f3ea;
+        --panel: #fffdf8;
+        --ink: #1f2a1f;
+        --muted: #6b7468;
+        --line: #d8d2c4;
+        --accent: #1f6f50;
+        --accent-2: #d8efe4;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+        background:
+          radial-gradient(circle at top right, #efe4c9 0, transparent 30%),
+          linear-gradient(180deg, #faf7ef 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+      .hero { margin-bottom: 24px; }
+      h1 { margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3rem); }
+      p { margin: 0; color: var(--muted); line-height: 1.45; }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 18px;
+        margin-top: 24px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 10px 30px rgba(49, 54, 42, 0.06);
+      }
+      .card h2 { margin: 0 0 10px; font-size: 1.1rem; }
+      .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+      label { display: grid; gap: 6px; font-size: 0.92rem; color: var(--muted); }
+      input[type="date"] {
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: white;
+        color: var(--ink);
+      }
+      button, .bookmarklet {
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 16px;
+        font: inherit;
+        cursor: pointer;
+        background: var(--accent);
+        color: white;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+      }
+      button.secondary { background: var(--accent-2); color: var(--accent); }
+      .status { margin-top: 12px; min-height: 22px; color: var(--muted); }
+      .meta { display: grid; gap: 8px; color: var(--muted); font-size: 0.95rem; }
+      .report-wrap {
+        margin-top: 26px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 18px;
+        overflow: hidden;
+      }
+      .table-scroll {
+        overflow: auto;
+        max-height: 70vh;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+      }
+      table { width: 100%; border-collapse: collapse; background: white; }
+      th, td {
+        padding: 10px 12px;
+        border-bottom: 1px solid #ece6da;
+        text-align: left;
+        white-space: nowrap;
+      }
+      th { position: sticky; top: 0; background: #f4efe4; }
+      .pill {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f4efe4;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>Assignr Hosted Dashboard</h1>
+        <p>Import requests from the Assignr games page, refresh the selected period from the Assignr API, and view the final person-level report in one place.</p>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>1. Install Bookmarklet</h2>
+          <p>Drag this to your bookmarks bar, then click it from the Assignr games page after the request rows are visible.</p>
+          <div class="controls">
+            <a class="bookmarklet" href="{{ bookmarklet_code }}">Assignr Requests</a>
+            <button class="secondary" id="copy-bookmarklet">Copy Bookmarklet</button>
+          </div>
+          <div class="status" id="bookmarklet-status"></div>
+        </article>
+
+        <article class="card">
+          <h2>2. Refresh Assignments</h2>
+          <div class="controls">
+            <label>
+              Start Date
+              <input type="date" id="start-date">
+            </label>
+            <label>
+              End Date
+              <input type="date" id="end-date">
+            </label>
+          </div>
+          <div class="controls">
+            <button id="refresh-button">Refresh Final Report</button>
+          </div>
+          <div class="status" id="refresh-status"></div>
+        </article>
+
+        <article class="card">
+          <h2>Current Data</h2>
+          <div class="meta">
+            <div><span class="pill">Imported request rows</span> {{ request_total }}</div>
+            <div><span class="pill">Final report rows</span> {{ row_count }}</div>
+            <div><span class="pill">Latest snapshot</span>
+              {% if run %}
+                {{ run.period_start }} to {{ run.period_end }} at {{ run.created_at }}
+              {% else %}
+                Not refreshed yet
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="report-wrap">
+        <h2>Final Report</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Bases</th>
+                <th>Plate</th>
+                <th>Total</th>
+                <th>RequestedGames</th>
+                <th>RequestedButAssignedNone</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td>{{ row["Name"] }}</td>
+                  <td>{{ row["Bases"] }}</td>
+                  <td>{{ row["Plate"] }}</td>
+                  <td>{{ row["Total"] }}</td>
+                  <td>{{ row["RequestedGames"] }}</td>
+                  <td>{{ row["RequestedButAssignedNone"] }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      async function refreshReport() {
+        const status = document.getElementById("refresh-status");
+        const startDate = document.getElementById("start-date").value;
+        const endDate = document.getElementById("end-date").value;
+        status.textContent = "Refreshing from Assignr...";
+        const response = await fetch("/api/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ start_date: startDate, end_date: endDate })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          status.textContent = payload.error || "Refresh failed.";
+          return;
+        }
+        status.textContent = `Fetched ${payload.games_fetched} game(s). Final report now has ${payload.final_rows} row(s). Reloading...`;
+        window.location.reload();
+      }
+
+      async function copyBookmarklet() {
+        const status = document.getElementById("bookmarklet-status");
+        const response = await fetch("/api/bookmarklet");
+        const payload = await response.json();
+        await navigator.clipboard.writeText(payload.bookmarklet);
+        status.textContent = "Bookmarklet copied to clipboard.";
+      }
+
+      document.getElementById("refresh-button").addEventListener("click", refreshReport);
+      document.getElementById("copy-bookmarklet").addEventListener("click", copyBookmarklet);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: assignr-fairness
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: assignr-fairness-db
+          property: connectionString
+      - key: ASSIGNR_CLIENT_ID
+        sync: false
+      - key: ASSIGNR_CLIENT_SECRET
+        sync: false
+      - key: ASSIGNR_SITE_ID
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+
+databases:
+  - name: assignr-fairness-db
+    plan: starter
