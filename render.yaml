@@ -2,7 +2,7 @@ services:
   - type: web
     name: assignr-fairness
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
@@ -21,4 +21,4 @@ services:
 
 databases:
   - name: assignr-fairness-db
-    plan: starter
+    plan: free
