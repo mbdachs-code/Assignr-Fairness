@@ -109,11 +109,10 @@ def csv_text(rows: list[dict[str, str]]) -> str:
 
 
 def build_bookmarklet(base_url: str) -> str:
-    endpoint = f"{base_url.rstrip('/')}/api/import-requests"
-    js = f"""
-javascript:(async()=>{{const endpoint={json.dumps(endpoint)};const F={json.dumps(REQUEST_FIELDNAMES)};const norm=v=>String(v??'').replace(/\\s+/g,' ').trim();const txt=n=>norm((n&&n.textContent)||'');const esc=v=>{{const s=String(v??'');return /[",\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}};const getGameId=node=>{{const c=node.closest('[id^="tab-requests-"], [data-game-id], tr, .game-row, .panel, .card');if(c?.dataset?.gameId)return norm(c.dataset.gameId);if(c?.id?.startsWith('tab-requests-'))return norm(c.id.replace('tab-requests-',''));const link=c?.querySelector('a[href*="/games/"]');const match=link?.href?.match(/\\/games\\/(\\d+)/);return match?match[1]:'';}};const meta=node=>{{const c=node.closest('[id^="tab-requests-"], [data-game-id], tr, .game-row, .panel, .card')||node;const t=Array.from(c.querySelectorAll('td, .team, .teams span')).map(txt).filter(Boolean);return{{game_id:getGameId(node),game_date:txt(c.querySelector('.game-date, [data-date], .date'))||'',venue:txt(c.querySelector('.venue, [data-venue]'))||'',home_team:t[0]||'',away_team:t[1]||''}};}};const rows=[];for(const root of Array.from(document.querySelectorAll('[id^="tab-requests-"], .requests, .tab-pane, .panel, table'))){{for(const tr of root.querySelectorAll('tr')){{const cells=Array.from(tr.querySelectorAll('td'));if(cells.length<2)continue;const requester=txt(cells[0]);if(!requester||/requester/i.test(requester))continue;const requestLink=tr.querySelector('a[href*="requests"]');const requestId=requestLink?.href?.match(/requests\\/(\\d+)/)?.[1]||'';const position=cells.map(txt).find(v=>/plate|base|any position/i.test(v))||'';rows.push({{...meta(tr),request_id:requestId,requester,requested_position:position,request_timestamp:'',declined:/declined/i.test(txt(tr))?'yes':'no'}});}}}}const cleaned=[];const seen=new Set();for(const row of rows){{if(!row.game_id||!row.requester)continue;const key=`${{row.request_id}}|${{row.game_id}}|${{row.requester}}|${{row.requested_position}}`;if(seen.has(key))continue;seen.add(key);cleaned.push(row);}}if(!cleaned.length){{alert('No request rows were found on this page. Make sure the Requests tab is visible.');return;}}const csv=[F.join(',')].concat(cleaned.map(r=>F.map(k=>esc(r[k]||'')).join(','))).join('\\n');await navigator.clipboard.writeText(csv);const response=await fetch(endpoint,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{rows:cleaned,replace:true}})}});const result=await response.json();if(!response.ok)throw new Error(result.error||'Import failed');alert(`Imported ${{result.imported_rows}} request row(s). Final report now has ${{result.final_rows}} row(s).`);}})().catch(err=>alert(`Assignr import failed: ${{err.message}}`));
-""".strip()
-    return js
+    endpoint = json.dumps(f"{base_url.rstrip('/')}/api/import-requests")
+    headers = json.dumps(REQUEST_FIELDNAMES)
+    template = r'''javascript:(()=>{const delay=(ms)=>new Promise((resolve)=>setTimeout(resolve,ms));const gameIdMatch=window.location.pathname.match(/\/assign\/games\/(\d+)\//);const tabGameIdMatch=(document.querySelector('[id^="tab-requests-"]')?.id||"").match(/tab-requests-(\d+)/);const pageGameId=gameIdMatch?gameIdMatch[1]:(tabGameIdMatch?tabGameIdMatch[1]:"");const onRequestedIndex=/\/games\/requested\/?$/.test(window.location.pathname);const receiverUrl=__ENDPOINT__;const venueEl=document.querySelector("h3 + h3 a, h3 a");const venue=venueEl?venueEl.textContent.trim():"";const dateEl=document.querySelector("h3");const gameDateText=dateEl?dateEl.textContent.trim():"";const collectRows=()=>{const rows=[];const seen=new Set();document.querySelectorAll('[id^="tab-requests-"] p').forEach((node)=>{const deleteLink=node.querySelector('a[href*="/game_requests/"]');if(!deleteLink)return;const href=deleteLink.getAttribute("href")||"";const rowGameMatch=href.match(/\/games\/(\d+)\/game_requests\/(\d+)\//);const requestMatch=href.match(/\/game_requests\/(\d+)\//);if(!requestMatch)return;const requestId=requestMatch[1];const rowGameId=rowGameMatch?rowGameMatch[1]:pageGameId;if(seen.has(requestId))return;seen.add(requestId);const strong=node.querySelector("strong");const name=strong?strong.textContent.replace(/,\s*$/,"").trim():"";const timestampNode=node.querySelector("span[title]");const requestTimestamp=timestampNode?timestampNode.getAttribute("title").trim():"";let requestedPosition=node.textContent||"";requestedPosition=requestedPosition.replace(name,"");requestedPosition=requestedPosition.replace(/\[[^\]]*Delete[^\]]*\]/gi,"");requestedPosition=requestedPosition.replace(/\([^)]*\)/g,"");requestedPosition=requestedPosition.replace(/\s+/g," ").replace(/^,\s*|\s*,$/g,"").trim();rows.push({game_id:rowGameId,game_date:gameDateText,venue:venue,home_team:"",away_team:"",request_id:requestId,requester:name,requested_position:requestedPosition,request_timestamp:requestTimestamp,declined:node.classList.contains("declined")?"yes":"no"});});return rows;};const openRequestTabs=async()=>{const toggles=Array.from(document.querySelectorAll(['a[href^="#tab-requests-"]','[data-bs-target^="#tab-requests-"]','[data-target^="#tab-requests-"]','[aria-controls^="tab-requests-"]'].join(",")));for(const toggle of toggles){toggle.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true}));await delay(120);}if(toggles.length){await delay(400);}};const headers=__HEADERS__;const finalize=(rows)=>{const csv=[headers.join(","),...rows.map((row)=>headers.map((key)=>`"${String(row[key]||"").replace(/"/g,'""')}"`).join(","))].join("\n");const missingGameIds=rows.filter((row)=>!String(row.game_id||"").trim()).length;const sendImport=()=>fetch(receiverUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rows:rows,replace:true})}).then(async(response)=>{const payload=await response.json().catch(()=>({}));if(!response.ok){throw new Error(payload.error||`Import failed with status ${response.status}`);}return payload;});const copyToClipboard=()=>navigator.clipboard.writeText(csv).then(()=>sendImport()).then((payload)=>{alert(`Imported ${payload.imported_rows} request row(s). Final report now has ${payload.final_rows} row(s).`);});if(!rows.length){alert("No request rows were found on this page. Make sure the Requests tab is visible.");}else if(missingGameIds){alert(onRequestedIndex?`Copied ${rows.length} request row(s), but game_id is missing on ${missingGameIds} row(s). Open an individual Assign page or the main games page for per-game matching.`:`Copied ${rows.length} request row(s), but game_id is missing on ${missingGameIds} row(s).`);}else{if(navigator.clipboard&&window.isSecureContext){copyToClipboard().catch((err)=>alert(`Assignr import failed: ${err.message}`));}else{alert("Clipboard access is required for this bookmarklet.");}}};(async()=>{let rows=collectRows();if(!rows.length){await openRequestTabs();rows=collectRows();}finalize(rows);})();})();'''
+    return template.replace("__ENDPOINT__", endpoint).replace("__HEADERS__", headers)
 
 
 def create_app() -> Flask:
@@ -145,12 +144,14 @@ def create_app() -> Flask:
                 person["Total"] += 1
         rows = []
         for canon in sorted(counts):
-            rows.append({
-                "Name": to_last_first(canon),
-                "Bases": str(counts[canon]["Bases"]),
-                "Plate": str(counts[canon]["Plate"]),
-                "Total": str(counts[canon]["Total"]),
-            })
+            rows.append(
+                {
+                    "Name": to_last_first(canon),
+                    "Bases": str(counts[canon]["Bases"]),
+                    "Plate": str(counts[canon]["Plate"]),
+                    "Total": str(counts[canon]["Total"]),
+                }
+            )
         return rows
 
     def request_counts(session: Session, include_declined: bool = False) -> OrderedDict[str, set[str]]:
@@ -177,23 +178,27 @@ def create_app() -> Flask:
             seen_names.add(canon)
             requested = len(requested_games.get(canon, set()))
             total_assigned = int(row.get("Total", "0") or "0")
-            merged.append({
-                "Name": report_name,
-                "Bases": row.get("Bases", "0") or "0",
-                "Plate": row.get("Plate", "0") or "0",
-                "Total": row.get("Total", "0") or "0",
-                "RequestedGames": str(requested),
-                "RequestedButAssignedNone": "YES" if requested > 0 and total_assigned == 0 else "",
-            })
+            merged.append(
+                {
+                    "Name": report_name,
+                    "Bases": row.get("Bases", "0") or "0",
+                    "Plate": row.get("Plate", "0") or "0",
+                    "Total": row.get("Total", "0") or "0",
+                    "RequestedGames": str(requested),
+                    "RequestedButAssignedNone": "YES" if requested > 0 and total_assigned == 0 else "",
+                }
+            )
         for canon in sorted(name for name in requested_games if name not in seen_names):
-            merged.append({
-                "Name": to_last_first(canon),
-                "Bases": "0",
-                "Plate": "0",
-                "Total": "0",
-                "RequestedGames": str(len(requested_games[canon])),
-                "RequestedButAssignedNone": "YES",
-            })
+            merged.append(
+                {
+                    "Name": to_last_first(canon),
+                    "Bases": "0",
+                    "Plate": "0",
+                    "Total": "0",
+                    "RequestedGames": str(len(requested_games[canon])),
+                    "RequestedButAssignedNone": "YES",
+                }
+            )
         return merged
 
     @app.context_processor
@@ -207,7 +212,13 @@ def create_app() -> Flask:
             run = latest_run(session)
             rows = merged_report_rows(session)
             request_total = len(session.scalars(select(RequestRow.id)).all())
-        return render_template("index.html", rows=rows[:250], row_count=len(rows), request_total=request_total, run=run)
+        return render_template(
+            "index.html",
+            rows=rows[:250],
+            row_count=len(rows),
+            request_total=request_total,
+            run=run,
+        )
 
     @app.get("/api/bookmarklet")
     def bookmarklet():
@@ -231,28 +242,32 @@ def create_app() -> Flask:
             if not isinstance(raw, dict):
                 return jsonify({"error": "Each row must be an object."}), 400
             request_id = normalize_spaces(str(raw.get("request_id", "")))
-            dedupe_key = request_id or "|".join([
-                normalize_spaces(str(raw.get("game_id", ""))),
-                normalize_spaces(str(raw.get("requester", ""))),
-                normalize_spaces(str(raw.get("requested_position", ""))),
-            ])
+            dedupe_key = request_id or "|".join(
+                [
+                    normalize_spaces(str(raw.get("game_id", ""))),
+                    normalize_spaces(str(raw.get("requester", ""))),
+                    normalize_spaces(str(raw.get("requested_position", ""))),
+                ]
+            )
             if dedupe_key in seen_request_ids:
                 continue
             seen_request_ids.add(dedupe_key)
-            normalized.append(RequestRow(
-                period_start=start,
-                period_end=end,
-                game_id=normalize_spaces(str(raw.get("game_id", ""))),
-                game_date=normalize_spaces(str(raw.get("game_date", ""))),
-                venue=normalize_spaces(str(raw.get("venue", ""))),
-                home_team=normalize_spaces(str(raw.get("home_team", ""))),
-                away_team=normalize_spaces(str(raw.get("away_team", ""))),
-                request_id=request_id,
-                requester=normalize_spaces(str(raw.get("requester", ""))),
-                requested_position=normalize_spaces(str(raw.get("requested_position", ""))),
-                request_timestamp=normalize_spaces(str(raw.get("request_timestamp", ""))),
-                declined=normalize_spaces(str(raw.get("declined", ""))).lower() == "yes",
-            ))
+            normalized.append(
+                RequestRow(
+                    period_start=start,
+                    period_end=end,
+                    game_id=normalize_spaces(str(raw.get("game_id", ""))),
+                    game_date=normalize_spaces(str(raw.get("game_date", ""))),
+                    venue=normalize_spaces(str(raw.get("venue", ""))),
+                    home_team=normalize_spaces(str(raw.get("home_team", ""))),
+                    away_team=normalize_spaces(str(raw.get("away_team", ""))),
+                    request_id=request_id,
+                    requester=normalize_spaces(str(raw.get("requester", ""))),
+                    requested_position=normalize_spaces(str(raw.get("requested_position", ""))),
+                    request_timestamp=normalize_spaces(str(raw.get("request_timestamp", ""))),
+                    declined=normalize_spaces(str(raw.get("declined", ""))).lower() == "yes",
+                )
+            )
 
         with Session(engine) as session:
             if replace:
@@ -291,14 +306,16 @@ def create_app() -> Flask:
             session.add(run)
             session.flush()
             for game in games:
-                session.add(SnapshotGame(
-                    run_id=run.id,
-                    game_id=str(game.get("id", "") or ""),
-                    game_date=str(game.get("game_date") or game.get("date") or ""),
-                    home_team=str(game.get("home_team", "") or ""),
-                    away_team=str(game.get("away_team", "") or ""),
-                    assignments_json=json.dumps(client.assignment_summary(game)),
-                ))
+                session.add(
+                    SnapshotGame(
+                        run_id=run.id,
+                        game_id=str(game.get("id", "") or ""),
+                        game_date=str(game.get("game_date") or game.get("date") or ""),
+                        home_team=str(game.get("home_team", "") or ""),
+                        away_team=str(game.get("away_team", "") or ""),
+                        assignments_json=json.dumps(client.assignment_summary(game)),
+                    )
+                )
             session.commit()
             final_rows = merged_report_rows(session)
         return jsonify({"ok": True, "games_fetched": len(games), "final_rows": len(final_rows)})
