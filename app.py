@@ -219,11 +219,13 @@ def create_app() -> Flask:
             run = latest_run(session)
             rows = merged_report_rows(session)
             request_total = len(session.scalars(select(RequestRow.id)).all())
+        requested_none_count = sum(1 for row in rows if row.get("RequestedButAssignedNone") == "YES")
         return render_template(
             "index.html",
-            rows=rows[:250],
+            rows=rows,
             row_count=len(rows),
             request_total=request_total,
+            requested_none_count=requested_none_count,
             run=run,
         )
 

@@ -13,6 +13,8 @@
         --line: #d8d2c4;
         --accent: #1f6f50;
         --accent-2: #d8efe4;
+        --warn: #8b3d25;
+        --warn-bg: #f7ded3;
       }
       * { box-sizing: border-box; }
       body {
@@ -24,12 +26,13 @@
         color: var(--ink);
       }
       main {
-        max-width: 1180px;
+        max-width: 1280px;
         margin: 0 auto;
         padding: 32px 20px 48px;
       }
       .hero { margin-bottom: 24px; }
       h1 { margin: 0 0 8px; font-size: clamp(2rem, 4vw, 3rem); }
+      h2 { margin: 0 0 10px; font-size: 1.1rem; }
       p { margin: 0; color: var(--muted); line-height: 1.45; }
       .grid {
         display: grid;
@@ -44,16 +47,24 @@
         padding: 18px;
         box-shadow: 0 10px 30px rgba(49, 54, 42, 0.06);
       }
-      .card h2 { margin: 0 0 10px; font-size: 1.1rem; }
-      .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+      .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; align-items: end; }
+      .report-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 14px 0 18px;
+        align-items: end;
+      }
       label { display: grid; gap: 6px; font-size: 0.92rem; color: var(--muted); }
-      input[type="date"] {
+      input[type="date"], input[type="search"], select {
         padding: 10px 12px;
         border: 1px solid var(--line);
         border-radius: 10px;
         background: white;
         color: var(--ink);
+        font: inherit;
       }
+      input[type="search"] { min-width: 240px; }
       button, .bookmarklet {
         border: 0;
         border-radius: 999px;
@@ -67,8 +78,26 @@
         align-items: center;
       }
       button.secondary { background: var(--accent-2); color: var(--accent); }
+      button.ghost { background: white; color: var(--accent); border: 1px solid var(--line); }
       .status { margin-top: 12px; min-height: 22px; color: var(--muted); }
       .meta { display: grid; gap: 8px; color: var(--muted); font-size: 0.95rem; }
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .stat {
+        background: white;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .stat strong {
+        display: block;
+        font-size: 1.6rem;
+        margin-top: 4px;
+      }
       .report-wrap {
         margin-top: 26px;
         background: var(--panel);
@@ -90,7 +119,16 @@
         text-align: left;
         white-space: nowrap;
       }
-      th { position: sticky; top: 0; background: #f4efe4; }
+      th {
+        position: sticky;
+        top: 0;
+        background: #f4efe4;
+        cursor: pointer;
+        user-select: none;
+      }
+      th.sort-active { color: var(--accent); }
+      tr.flagged { background: #fff6f2; }
+      td.flag { color: var(--warn); font-weight: 700; }
       .pill {
         display: inline-block;
         padding: 4px 10px;
@@ -98,6 +136,30 @@
         background: #f4efe4;
         color: var(--muted);
         font-size: 0.85rem;
+      }
+      .report-subtitle {
+        color: var(--muted);
+        margin-top: 4px;
+      }
+      .report-meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .warning-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: var(--warn-bg);
+        color: var(--warn);
+        font-size: 0.85rem;
+      }
+      @media (max-width: 720px) {
+        main { padding: 20px 14px 36px; }
+        .report-controls { flex-direction: column; align-items: stretch; }
+        input[type="search"] { min-width: 0; width: 100%; }
       }
     </style>
   </head>
@@ -142,6 +204,7 @@
           <div class="meta">
             <div><span class="pill">Imported request rows</span> {{ request_total }}</div>
             <div><span class="pill">Final report rows</span> {{ row_count }}</div>
+            <div><span class="pill">Requested but assigned none</span> {{ requested_none_count }}</div>
             <div><span class="pill">Latest snapshot</span>
               {% if run %}
                 {{ run.period_start }} to {{ run.period_end }} at {{ run.created_at }}
@@ -155,36 +218,160 @@
 
       <section class="report-wrap">
         <h2>Final Report</h2>
+        <p class="report-subtitle">Sort any column, search by name, filter to the fairness cases, or export the current report to CSV.</p>
+
+        <div class="stat-grid">
+          <div class="stat">
+            <span class="pill">People in report</span>
+            <strong id="stat-row-count">{{ row_count }}</strong>
+          </div>
+          <div class="stat">
+            <span class="pill">Requested games total</span>
+            <strong id="stat-requested-total">0</strong>
+          </div>
+          <div class="stat">
+            <span class="pill">Assigned games total</span>
+            <strong id="stat-assigned-total">0</strong>
+          </div>
+          <div class="stat">
+            <span class="warning-chip">Requested but assigned none</span>
+            <strong id="stat-requested-none">{{ requested_none_count }}</strong>
+          </div>
+        </div>
+
+        <div class="report-controls">
+          <label>
+            Search Name
+            <input type="search" id="search-input" placeholder="Type a name">
+          </label>
+          <label>
+            Filter
+            <select id="filter-select">
+              <option value="all">All Rows</option>
+              <option value="requested_none">Requested But Assigned None</option>
+              <option value="requested_only">Requested At Least One</option>
+              <option value="assigned_only">Assigned At Least One</option>
+            </select>
+          </label>
+          <button class="ghost" id="export-csv">Export CSV</button>
+          <div class="report-meta" id="visible-count"></div>
+        </div>
+
         <div class="table-scroll">
-          <table>
+          <table id="report-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Bases</th>
-                <th>Plate</th>
-                <th>Total</th>
-                <th>RequestedGames</th>
-                <th>RequestedButAssignedNone</th>
+                <th data-key="Name">Name</th>
+                <th data-key="Bases">Bases</th>
+                <th data-key="Plate">Plate</th>
+                <th data-key="Total">Total</th>
+                <th data-key="RequestedGames">RequestedGames</th>
+                <th data-key="RequestedButAssignedNone">RequestedButAssignedNone</th>
               </tr>
             </thead>
-            <tbody>
-              {% for row in rows %}
-                <tr>
-                  <td>{{ row["Name"] }}</td>
-                  <td>{{ row["Bases"] }}</td>
-                  <td>{{ row["Plate"] }}</td>
-                  <td>{{ row["Total"] }}</td>
-                  <td>{{ row["RequestedGames"] }}</td>
-                  <td>{{ row["RequestedButAssignedNone"] }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
+            <tbody id="report-body"></tbody>
           </table>
         </div>
       </section>
     </main>
 
     <script>
+      const allRows = {{ rows|tojson }};
+      let currentRows = [...allRows];
+      let sortState = { key: "RequestedButAssignedNone", direction: "desc" };
+
+      function asNumber(value) {
+        const n = Number(value || 0);
+        return Number.isFinite(n) ? n : 0;
+      }
+
+      function compareRows(a, b, key, direction) {
+        let left = a[key] ?? "";
+        let right = b[key] ?? "";
+        const numericKeys = new Set(["Bases", "Plate", "Total", "RequestedGames"]);
+        if (numericKeys.has(key)) {
+          left = asNumber(left);
+          right = asNumber(right);
+        } else {
+          left = String(left).toLowerCase();
+          right = String(right).toLowerCase();
+        }
+        if (left < right) return direction === "asc" ? -1 : 1;
+        if (left > right) return direction === "asc" ? 1 : -1;
+        return 0;
+      }
+
+      function applyFilters() {
+        const search = document.getElementById("search-input").value.trim().toLowerCase();
+        const filter = document.getElementById("filter-select").value;
+        currentRows = allRows.filter((row) => {
+          const matchesSearch = !search || String(row.Name || "").toLowerCase().includes(search);
+          if (!matchesSearch) return false;
+          if (filter === "requested_none") return row.RequestedButAssignedNone === "YES";
+          if (filter === "requested_only") return asNumber(row.RequestedGames) > 0;
+          if (filter === "assigned_only") return asNumber(row.Total) > 0;
+          return true;
+        });
+        currentRows.sort((a, b) => compareRows(a, b, sortState.key, sortState.direction));
+        renderTable();
+        updateStats();
+      }
+
+      function renderTable() {
+        const body = document.getElementById("report-body");
+        body.innerHTML = "";
+        for (const row of currentRows) {
+          const tr = document.createElement("tr");
+          if (row.RequestedButAssignedNone === "YES") tr.className = "flagged";
+          const cells = [
+            row.Name,
+            row.Bases,
+            row.Plate,
+            row.Total,
+            row.RequestedGames,
+            row.RequestedButAssignedNone,
+          ];
+          cells.forEach((value, index) => {
+            const td = document.createElement("td");
+            td.textContent = value || "";
+            if (index === 5 && value === "YES") td.className = "flag";
+            tr.appendChild(td);
+          });
+          body.appendChild(tr);
+        }
+        document.querySelectorAll("th[data-key]").forEach((th) => {
+          th.classList.toggle("sort-active", th.dataset.key === sortState.key);
+          const arrow = th.dataset.key === sortState.key ? (sortState.direction === "asc" ? " ▲" : " ▼") : "";
+          th.textContent = th.dataset.key + arrow;
+        });
+        document.getElementById("visible-count").textContent = `Showing ${currentRows.length} of ${allRows.length} row(s)`;
+      }
+
+      function updateStats() {
+        const requestedTotal = currentRows.reduce((sum, row) => sum + asNumber(row.RequestedGames), 0);
+        const assignedTotal = currentRows.reduce((sum, row) => sum + asNumber(row.Total), 0);
+        const requestedNone = currentRows.filter((row) => row.RequestedButAssignedNone === "YES").length;
+        document.getElementById("stat-row-count").textContent = currentRows.length;
+        document.getElementById("stat-requested-total").textContent = requestedTotal;
+        document.getElementById("stat-assigned-total").textContent = assignedTotal;
+        document.getElementById("stat-requested-none").textContent = requestedNone;
+      }
+
+      async function exportCsv() {
+        const rows = currentRows;
+        const headers = ["Name", "Bases", "Plate", "Total", "RequestedGames", "RequestedButAssignedNone"];
+        const csv = [headers.join(",")].concat(rows.map((row) => headers.map((key) => `"${String(row[key] || "").replace(/"/g, '""')}"`).join(","))).join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "assignr_final_report.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
       async function refreshReport() {
         const status = document.getElementById("refresh-status");
         const startDate = document.getElementById("start-date").value;
@@ -214,6 +401,22 @@
 
       document.getElementById("refresh-button").addEventListener("click", refreshReport);
       document.getElementById("copy-bookmarklet").addEventListener("click", copyBookmarklet);
+      document.getElementById("export-csv").addEventListener("click", exportCsv);
+      document.getElementById("search-input").addEventListener("input", applyFilters);
+      document.getElementById("filter-select").addEventListener("change", applyFilters);
+      document.querySelectorAll("th[data-key]").forEach((th) => {
+        th.addEventListener("click", () => {
+          const key = th.dataset.key;
+          if (sortState.key === key) {
+            sortState.direction = sortState.direction === "asc" ? "desc" : "asc";
+          } else {
+            sortState = { key, direction: key === "Name" ? "asc" : "desc" };
+          }
+          applyFilters();
+        });
+      });
+
+      applyFilters();
     </script>
   </body>
 </html>
