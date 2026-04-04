@@ -7,7 +7,7 @@ import os
 from collections import OrderedDict
 from datetime import date, datetime
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, make_response, render_template, request
 from sqlalchemy import Boolean, Date, DateTime, Integer, String, Text, create_engine, delete, desc, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -201,6 +201,13 @@ def create_app() -> Flask:
             )
         return merged
 
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+
     @app.context_processor
     def inject_globals() -> dict[str, str]:
         base_url = os.getenv("PUBLIC_APP_URL", "").strip() or request.url_root.rstrip("/")
@@ -224,6 +231,10 @@ def create_app() -> Flask:
     def bookmarklet():
         base_url = os.getenv("PUBLIC_APP_URL", "").strip() or request.url_root.rstrip("/")
         return jsonify({"bookmarklet": build_bookmarklet(base_url)})
+
+    @app.route("/api/import-requests", methods=["OPTIONS"])
+    def import_requests_options():
+        return make_response(("", 204))
 
     @app.post("/api/import-requests")
     def import_requests():
