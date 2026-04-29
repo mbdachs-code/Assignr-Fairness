@@ -26,6 +26,19 @@ REQUEST_FIELDNAMES = [
     "declined",
 ]
 REPORT_FIELDNAMES = ["Name", "Bases", "Plate", "Total", "RequestedGames", "RequestedButAssignedNone"]
+APP_VERSION = "v2.0.0"
+APP_CHANGELOG = [
+    {
+        "version": "v2.0.0",
+        "date": "2026-04-29",
+        "summary": "Working-plan fairness workflow",
+        "changes": [
+            "Added a local working-plan layer so draft assignments can be saved without changing official Assignr assignments.",
+            "Added review-window filtering so fairness can be rerun for just part of the season after one broad sync.",
+            "Added per-game change summaries plus safer reset actions for local draft work.",
+        ],
+    },
+]
 
 
 class Base(DeclarativeBase):
@@ -348,6 +361,8 @@ def create_app() -> Flask:
             requested_none_count=requested_none_count,
             working_change_count=working_change_count,
             run=run,
+            app_version=APP_VERSION,
+            app_changelog=APP_CHANGELOG,
         )
 
     @app.get("/api/bookmarklet")
