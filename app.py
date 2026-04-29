@@ -11,7 +11,7 @@ from flask import Flask, jsonify, make_response, render_template, request
 from sqlalchemy import Boolean, Date, DateTime, Integer, String, Text, create_engine, delete, desc, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from assignr_client import AssignrClient
+from assignr_client import AssignrClient, game_date as api_game_date
 
 REQUEST_FIELDNAMES = [
     "game_id",
@@ -25,6 +25,7 @@ REQUEST_FIELDNAMES = [
     "request_timestamp",
     "declined",
 ]
+REPORT_FIELDNAMES = ["Name", "Bases", "Plate", "Total", "RequestedGames", "RequestedButAssignedNone"]
 
 
 class Base(DeclarativeBase):
@@ -71,6 +72,14 @@ class SnapshotGame(Base):
     assignments_json: Mapped[str] = mapped_column(Text, default="[]")
 
 
+class WorkingGamePlan(Base):
+    __tablename__ = "working_game_plans"
+
+    game_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    assignments_json: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 def normalize_spaces(value: str) -> str:
     return " ".join((value or "").strip().split())
 
@@ -100,9 +109,8 @@ def parse_date(value: str) -> date:
 
 
 def csv_text(rows: list[dict[str, str]]) -> str:
-    fieldnames = ["Name", "Bases", "Plate", "Total", "RequestedGames", "RequestedButAssignedNone"]
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer = csv.DictWriter(buffer, fieldnames=REPORT_FIELDNAMES)
     writer.writeheader()
     writer.writerows(rows)
     return buffer.getvalue()
@@ -128,10 +136,86 @@ def create_app() -> Flask:
     def latest_run(session: Session) -> SnapshotRun | None:
         return session.scalar(select(SnapshotRun).order_by(desc(SnapshotRun.created_at)).limit(1))
 
-    def assignment_rows_for_run(session: Session, run_id: int) -> list[dict[str, str]]:
+    def parse_optional_date(value: str | None) -> date | None:
+        value = (value or "").strip()
+        if not value:
+            return None
+        return parse_date(value)
+
+    def normalize_assignment_payload(assignments: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for assignment in assignments or []:
+            if not isinstance(assignment, dict):
+                continue
+            name = canonical_name(str(assignment.get("name", "")))
+            position = normalize_spaces(str(assignment.get("position", "")))
+            if not name or not position:
+                continue
+            normalized.append({"name": name, "position": position})
+        return normalized
+
+    def load_working_plans(session: Session) -> dict[str, dict[str, object]]:
+        plans: dict[str, dict[str, object]] = {}
+        for plan in session.scalars(select(WorkingGamePlan)).all():
+            plans[normalize_spaces(plan.game_id)] = {
+                "assignments": normalize_assignment_payload(json.loads(plan.assignments_json or "[]")),
+                "updated_at": plan.updated_at,
+            }
+        return plans
+
+    def filtered_snapshot_games(
+        session: Session,
+        review_start: date | None = None,
+        review_end: date | None = None,
+    ) -> list[SnapshotGame]:
+        run = latest_run(session)
+        if not run:
+            return []
+        games = list(session.scalars(select(SnapshotGame).where(SnapshotGame.run_id == run.id)).all())
+        kept: list[SnapshotGame] = []
+        for game in games:
+            game_day = parse_optional_date(normalize_spaces(game.game_date))
+            if review_start and game_day and game_day < review_start:
+                continue
+            if review_end and game_day and game_day > review_end:
+                continue
+            kept.append(game)
+        kept.sort(key=lambda game: (normalize_spaces(game.game_date), normalize_spaces(game.home_team), normalize_spaces(game.away_team), normalize_spaces(game.game_id)))
+        return kept
+
+    def request_counts_for_games(
+        session: Session,
+        included_game_ids: set[str],
+        include_declined: bool = False,
+    ) -> OrderedDict[str, set[str]]:
+        counts: OrderedDict[str, set[str]] = OrderedDict()
+        for row in session.scalars(select(RequestRow).order_by(RequestRow.id)).all():
+            if row.declined and not include_declined:
+                continue
+            game_id = normalize_spaces(row.game_id)
+            if included_game_ids and game_id not in included_game_ids:
+                continue
+            name = canonical_name(row.requester)
+            if not name or not game_id:
+                continue
+            counts.setdefault(name, set()).add(game_id)
+        return counts
+
+    def build_report_rows(
+        session: Session,
+        review_start: date | None = None,
+        review_end: date | None = None,
+    ) -> list[dict[str, str]]:
+        working_plans = load_working_plans(session)
+        games = filtered_snapshot_games(session, review_start, review_end)
         counts: dict[str, dict[str, int]] = {}
-        for game in session.scalars(select(SnapshotGame).where(SnapshotGame.run_id == run_id)).all():
-            for assignment in json.loads(game.assignments_json or "[]"):
+        included_game_ids = {normalize_spaces(game.game_id) for game in games if normalize_spaces(game.game_id)}
+
+        for game in games:
+            game_id = normalize_spaces(game.game_id)
+            working = working_plans.get(game_id, {})
+            assignments = working.get("assignments") or normalize_assignment_payload(json.loads(game.assignments_json or "[]"))
+            for assignment in assignments:
                 name = canonical_name(str(assignment.get("name", "")))
                 if not name:
                     continue
@@ -142,54 +226,28 @@ def create_app() -> Flask:
                 elif "plate" in position:
                     person["Plate"] += 1
                 person["Total"] += 1
-        rows = []
+
+        requested_games = request_counts_for_games(session, included_game_ids)
+        rows: list[dict[str, str]] = []
+        seen_names: set[str] = set()
+
         for canon in sorted(counts):
+            seen_names.add(canon)
+            requested = len(requested_games.get(canon, set()))
+            total_assigned = counts[canon]["Total"]
             rows.append(
                 {
                     "Name": to_last_first(canon),
                     "Bases": str(counts[canon]["Bases"]),
                     "Plate": str(counts[canon]["Plate"]),
-                    "Total": str(counts[canon]["Total"]),
-                }
-            )
-        return rows
-
-    def request_counts(session: Session, include_declined: bool = False) -> OrderedDict[str, set[str]]:
-        counts: OrderedDict[str, set[str]] = OrderedDict()
-        for row in session.scalars(select(RequestRow).order_by(RequestRow.id)).all():
-            if row.declined and not include_declined:
-                continue
-            name = canonical_name(row.requester)
-            game_id = normalize_spaces(row.game_id)
-            if not name or not game_id:
-                continue
-            counts.setdefault(name, set()).add(game_id)
-        return counts
-
-    def merged_report_rows(session: Session) -> list[dict[str, str]]:
-        run = latest_run(session)
-        report_rows = assignment_rows_for_run(session, run.id) if run else []
-        requested_games = request_counts(session)
-        merged: list[dict[str, str]] = []
-        seen_names: set[str] = set()
-        for row in report_rows:
-            report_name = normalize_spaces(row.get("Name", ""))
-            canon = canonical_name(report_name)
-            seen_names.add(canon)
-            requested = len(requested_games.get(canon, set()))
-            total_assigned = int(row.get("Total", "0") or "0")
-            merged.append(
-                {
-                    "Name": report_name,
-                    "Bases": row.get("Bases", "0") or "0",
-                    "Plate": row.get("Plate", "0") or "0",
-                    "Total": row.get("Total", "0") or "0",
+                    "Total": str(total_assigned),
                     "RequestedGames": str(requested),
                     "RequestedButAssignedNone": "YES" if requested > 0 and total_assigned == 0 else "",
                 }
             )
+
         for canon in sorted(name for name in requested_games if name not in seen_names):
-            merged.append(
+            rows.append(
                 {
                     "Name": to_last_first(canon),
                     "Bases": "0",
@@ -199,13 +257,70 @@ def create_app() -> Flask:
                     "RequestedButAssignedNone": "YES",
                 }
             )
-        return merged
+        return rows
+
+    def build_game_rows(
+        session: Session,
+        review_start: date | None = None,
+        review_end: date | None = None,
+    ) -> list[dict[str, object]]:
+        working_plans = load_working_plans(session)
+        games = filtered_snapshot_games(session, review_start, review_end)
+        rows: list[dict[str, object]] = []
+        for game in games:
+            game_id = normalize_spaces(game.game_id)
+            official_assignments = normalize_assignment_payload(json.loads(game.assignments_json or "[]"))
+            working = working_plans.get(game_id)
+            working_assignments = list(working.get("assignments", [])) if working else []
+            effective_assignments = working_assignments or official_assignments
+            official_by_position = {row["position"]: row["name"] for row in official_assignments}
+            effective_by_position = {row["position"]: row["name"] for row in effective_assignments}
+            change_summary: list[str] = []
+            for position in sorted(set(official_by_position) | set(effective_by_position)):
+                official_name = official_by_position.get(position, "Unassigned")
+                effective_name = effective_by_position.get(position, "Unassigned")
+                if official_name != effective_name:
+                    change_summary.append(f"{position}: {official_name} -> {effective_name}")
+            rows.append(
+                {
+                    "game_id": game_id,
+                    "game_date": normalize_spaces(game.game_date),
+                    "home_team": normalize_spaces(game.home_team),
+                    "away_team": normalize_spaces(game.away_team),
+                    "official_assignments": official_assignments,
+                    "working_assignments": working_assignments,
+                    "effective_assignments": effective_assignments,
+                    "has_working_changes": bool(working_assignments),
+                    "change_summary": change_summary,
+                    "change_count": len(change_summary),
+                    "updated_at": working["updated_at"].isoformat() if working and working.get("updated_at") else "",
+                }
+            )
+        return rows
+
+    def candidate_names(session: Session) -> list[str]:
+        names: set[str] = set()
+        for row in session.scalars(select(RequestRow.requester)).all():
+            canon = canonical_name(row)
+            if canon:
+                names.add(canon)
+        for game in session.scalars(select(SnapshotGame)).all():
+            for assignment in normalize_assignment_payload(json.loads(game.assignments_json or "[]")):
+                canon = canonical_name(assignment["name"])
+                if canon:
+                    names.add(canon)
+        for plan in session.scalars(select(WorkingGamePlan)).all():
+            for assignment in normalize_assignment_payload(json.loads(plan.assignments_json or "[]")):
+                canon = canonical_name(assignment["name"])
+                if canon:
+                    names.add(canon)
+        return sorted(names, key=lambda name: name.lower())
 
     @app.after_request
     def add_cors_headers(response):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
         return response
 
     @app.context_processor
@@ -217,15 +332,21 @@ def create_app() -> Flask:
     def index():
         with Session(engine) as session:
             run = latest_run(session)
-            rows = merged_report_rows(session)
+            rows = build_report_rows(session)
             request_total = len(session.scalars(select(RequestRow.id)).all())
+            game_rows = build_game_rows(session)
+            candidates = candidate_names(session)
         requested_none_count = sum(1 for row in rows if row.get("RequestedButAssignedNone") == "YES")
+        working_change_count = sum(1 for game in game_rows if game.get("has_working_changes"))
         return render_template(
             "index.html",
             rows=rows,
+            games=game_rows,
+            candidates=candidates,
             row_count=len(rows),
             request_total=request_total,
             requested_none_count=requested_none_count,
+            working_change_count=working_change_count,
             run=run,
         )
 
@@ -295,7 +416,7 @@ def create_app() -> Flask:
                     existing_ids.add(row.request_id)
                 imported += 1
             session.commit()
-            final_rows = merged_report_rows(session)
+            final_rows = build_report_rows(session)
         return jsonify({"ok": True, "imported_rows": imported, "final_rows": len(final_rows)})
 
     @app.post("/api/refresh")
@@ -319,25 +440,82 @@ def create_app() -> Flask:
             session.add(run)
             session.flush()
             for game in games:
+                game_day = api_game_date(game)
                 session.add(
                     SnapshotGame(
                         run_id=run.id,
                         game_id=str(game.get("id", "") or ""),
-                        game_date=str(game.get("game_date") or game.get("date") or ""),
+                        game_date=game_day.isoformat() if game_day else str(game.get("game_date") or game.get("date") or ""),
                         home_team=str(game.get("home_team", "") or ""),
                         away_team=str(game.get("away_team", "") or ""),
                         assignments_json=json.dumps(client.assignment_summary(game)),
                     )
                 )
             session.commit()
-            final_rows = merged_report_rows(session)
+            final_rows = build_report_rows(session)
         return jsonify({"ok": True, "games_fetched": len(games), "final_rows": len(final_rows)})
 
     @app.get("/api/final-report")
     def final_report():
+        review_start = parse_optional_date(request.args.get("review_start"))
+        review_end = parse_optional_date(request.args.get("review_end"))
         with Session(engine) as session:
-            rows = merged_report_rows(session)
+            rows = build_report_rows(session, review_start, review_end)
         return jsonify({"rows": rows, "csv": csv_text(rows)})
+
+    @app.get("/api/games")
+    def games():
+        review_start = parse_optional_date(request.args.get("review_start"))
+        review_end = parse_optional_date(request.args.get("review_end"))
+        search = normalize_spaces(request.args.get("search", "")).lower()
+        with Session(engine) as session:
+            rows = build_game_rows(session, review_start, review_end)
+            candidates = candidate_names(session)
+        if search:
+            rows = [
+                game
+                for game in rows
+                if search in f"{game['home_team']} {game['away_team']} {game['game_id']}".lower()
+            ]
+        return jsonify({"games": rows, "candidates": candidates})
+
+    @app.route("/api/working-plan", methods=["OPTIONS"])
+    def working_plan_options():
+        return make_response(("", 204))
+
+    @app.post("/api/working-plan")
+    def save_working_plan():
+        payload = request.get_json(silent=True) or {}
+        game_id = normalize_spaces(str(payload.get("game_id", "")))
+        assignments = normalize_assignment_payload(payload.get("assignments") if isinstance(payload.get("assignments"), list) else [])
+        if not game_id:
+            return jsonify({"error": "game_id is required."}), 400
+        with Session(engine) as session:
+            existing = session.get(WorkingGamePlan, game_id)
+            if existing is None:
+                existing = WorkingGamePlan(game_id=game_id)
+                session.add(existing)
+            existing.assignments_json = json.dumps(assignments)
+            existing.updated_at = datetime.utcnow()
+            session.commit()
+        return jsonify({"ok": True, "saved": len(assignments)})
+
+    @app.delete("/api/working-plan/<game_id>")
+    def clear_working_plan(game_id: str):
+        game_id = normalize_spaces(game_id)
+        with Session(engine) as session:
+            existing = session.get(WorkingGamePlan, game_id)
+            if existing is not None:
+                session.delete(existing)
+                session.commit()
+        return jsonify({"ok": True})
+
+    @app.delete("/api/working-plan")
+    def clear_all_working_plans():
+        with Session(engine) as session:
+            session.execute(delete(WorkingGamePlan))
+            session.commit()
+        return jsonify({"ok": True})
 
     return app
 
